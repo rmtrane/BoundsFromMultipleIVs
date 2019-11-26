@@ -203,22 +203,22 @@ simulate_data <- function(sample_size = 10000,
       )
   }
 
-  if(any(indIVs_on_Y > 0)){
+  if(any(indIVs_on_Y != 0)){
     coefs <- bind_rows(
       coefs,
       tibble(coef = indIVs_on_Y,
              effect = glue("Z{1:length(indIVs_on_Y)}_on_Y"))
     ) %>%
-      filter(coef > 0)
+      filter(coef != 0)
   }
 
-  if(any(depIVs_on_Y > 0)){
+  if(any(depIVs_on_Y != 0)){
     coefs <- bind_rows(
       coefs,
       tibble(coef = depIVs_on_Y,
              effect = glue("Z{length(depIVs_on_Y) + c(1,2)}_on_Y"))
     ) %>%
-      filter(coef > 0)
+      filter(coef != 0)
   }
 
   return(list(simulated_data = select(out_data, -pX, -pY),
@@ -269,6 +269,17 @@ from_simulated_to_dag <- function(simulated_data, layout = "auto"){
            label_y = (y + yend)/2)
 
   return(tidy_dag)
+}
+
+plot_DAG <- function(sim_data){
+  tidyDAG <- from_simulated_to_dag(sim_data)
+
+  ggdag(tidyDAG) +
+    geom_label_repel(aes(label = coef,
+                         x = label_x,
+                         y = label_y)) +
+    theme_dag_blank() +
+    ggtitle("DAG structure used for simulation")
 }
 
 
