@@ -1,0 +1,382 @@
+---
+title: "Data Simulation"
+author: "Ralph Trane"
+date: "Compiled: `r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+bibliography: references.bib
+---
+
+## Purpose
+
+As summarized so well by @swanson_partial_2018, by using instrumental variables we can find bounds on the ATE (Average Treatment Effect). Here, we will explore if we can utilize multiple valid IVs to obtain narrower bounds. 
+
+## Simulation: binaries all around
+
+Loosely based on @palmer_nonparametric_2011. The general idea is to simulate data from a number of IVs $Z_1, ..., Z_{n_{iv}}$, a treatment $X$, unmeasured confounder $U$, and an outcome $Y$. In the simplest case, we simulate data as follows:
+
+\begin{align}
+Z_i &\sim \text{Bernoulli}(0.5), \\
+U &\sim \text{Bernoulli}(0.5), \\
+X &\sim \text{Bernoulli}(p_X), \\
+Y &\sim \text{Bernoulli}(p_Y), \\
+\end{align}
+
+where 
+
+$$
+p_X = 0.05 + \sum_{i=1}^{n_{iv}} \alpha_i \cdot Z_i + \gamma_X \cdot U,
+$$
+
+and 
+
+$$
+p_Y = 0.05 + \beta \cdot X + \gamma_Y \cdot U.
+$$ 
+
+### Setup 1: single IV
+
+With a single IV, we look to see how changing coefficients $\alpha_1, \gamma_X, \gamma_Y$ and $\beta$ affect the bounds. 
+
+```{r}
+library(bpbounds)
+library(glue)
+library(dagitty)
+library(ggdag)
+library(ggrepel)
+library(tidyverse)
+
+source("misc.R")
+
+if(!file.exists(paste0(here::here(), "/simulated_data/single_IV_simulation.Rds")) &&
+   !interactive()){
+  single_IV <- expand_grid(U_on_X = seq(0.01, by = 0.02, length.out = 10),
+                           U_on_Y = seq(0.01, by = 0.02, length.out = 10),
+                           X_on_Y = seq(0.01, by = 0.02, length.out = 10),
+                           indIVs_on_X = seq(0.01, by = 0.02, length.out = 10))
+  
+  library(furrr)
+  plan(multiprocess)
+  
+  single_IV_simulation <- single_IV %>% 
+    mutate(sim_data = future_pmap(list(a = U_on_X, 
+                                       b = U_on_Y,
+                                       c = X_on_Y,
+                                       d = indIVs_on_X),
+                                  function(a,b,c,d){
+                                    simulate_data(sample_size = 10000,
+                                                  U_on_X = a, 
+                                                  U_on_Y = b,
+                                                  X_on_Y = c, 
+                                                  indIVs_on_X = d)
+                                  }))
+  
+  write_rds(x = single_IV_simulation, path = paste0(here::here(), "/simulated_data/single_IV_simulation.Rds"))
+  
+} 
+
+if(!file.exists(paste0(here::here(), "/simulated_data/res.Rds")) && !interactive()){
+  if(!exists("single_IV_simulation"))
+    single_IV_simulation <- read_rds(paste0(here::here(), "/simulated_data/single_IV_simulation.Rds"))
+  
+  library(furrr)
+  plan(multiprocess)
+  res <- single_IV_simulation %>% 
+    mutate(my_bpbounds_res = future_map(sim_data,
+                                        ~my_bpbounds(input_data = .x$simulated_data))) %>% 
+    mutate(my_bpbounds_res = future_map(my_bpbounds_res, function(x){ 
+      x %>% 
+        mutate(tidy_output = map(bpbounds, tidy_bpbounds),
+               `n Z categories` = map_dbl(bpbounds, function(x) x$nzcats))
+    }))
+  
+  write_rds(res, paste0(here::here(), "/simulated_data/res.Rds"))
+} else {
+  res <- read_rds(paste0(here::here(), "/simulated_data/res.Rds"))
+}
+
+
+tidy_results <- res %>% 
+  select(-sim_data) %>% 
+  unnest(my_bpbounds_res) %>% 
+  select(-bpbounds) %>% 
+  unnest(tidy_output)
+```
+
+For fixed $\gamma_X = \gamma_Y = \beta = 0.19$, we vary $\alpha$.
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         U_on_X > 0.18, U_on_Y > 0.18, X_on_Y > 0.18) %>% 
+  ggplot(aes(x = indIVs_on_X, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+For fixed $\gamma_X = \gamma_Y = \alpha = 0.19$, we vary $\beta$.
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         U_on_X > 0.18, U_on_Y > 0.18, indIVs_on_X > 0.18) %>% 
+  ggplot(aes(x = X_on_Y, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+For fixed $\alpha = \beta = \gamma_Y = 0.19$, we vary $\gamma_X$.
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         X_on_Y > 0.18, U_on_Y > 0.18, indIVs_on_X > 0.18) %>% 
+  ggplot(aes(x = U_on_X, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+For fixed $\alpha = \beta = \gamma_X = 0.19$, we vary $\gamma_X$.
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         X_on_Y > 0.18, U_on_X > 0.18, indIVs_on_X > 0.18) %>% 
+  ggplot(aes(x = U_on_Y, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+### Setup 2: Multiple independent IVs
+
+```{r}
+if(!file.exists(paste0(here::here(), "/simulated_data/multiple_IVs_simulation.Rds")) && !interactive()){
+  multiple_IVs <- expand_grid(U_on_X = seq(0.01, by = 0.02, length.out = 10),
+                              U_on_Y = seq(0.01, by = 0.02, length.out = 10),
+                              X_on_Y = seq(0.01, by = 0.02, length.out = 10))
+  
+  library(furrr)
+  plan(multiprocess)
+  
+  multiple_IVs_simulation <- multiple_IVs %>% 
+    mutate(sim_data = future_pmap(list(a = U_on_X, 
+                                       b = U_on_Y,
+                                       c = X_on_Y),
+                                  function(a,b,c){
+                                    simulate_data(sample_size = 10000,
+                                                  U_on_X = a, 
+                                                  U_on_Y = b,
+                                                  X_on_Y = c, 
+                                                  indIVs_on_X = seq(0.01, by = 0.02, length.out = 10))
+                                  }))
+  
+  write_rds(x = multiple_IVs_simulation, path = paste0(here::here(), "/simulated_data/multiple_IVs_simulation.Rds"))
+  
+} 
+
+if(!file.exists(paste0(here::here(), "/simulated_data/res_multiple.Rds")) && !interactive()){
+  
+  if(!exists("multiple_IVs_simulation"))
+    multiple_IVs_simulation <- read_rds(paste0(here::here(), "/simulated_data/multiple_IVs_simulation.Rds"))
+  
+  library(furrr)
+  plan(multiprocess)
+  res_multiple <- multiple_IVs_simulation %>% 
+    mutate(my_bpbounds_res = future_map(sim_data,
+                                        ~my_bpbounds(input_data = .x$simulated_data))) %>% 
+    mutate(my_bpbounds_res = future_map(my_bpbounds_res, function(x){ 
+      x %>% 
+        mutate(tidy_output = map(bpbounds, tidy_bpbounds),
+               `n Z categories` = map_dbl(bpbounds, function(x) x$nzcats))
+    }))
+  
+  write_rds(res_multiple, paste0(here::here(), "/simulated_data/res_multiple.Rds"))
+} else {
+  res_multiple <- read_rds(paste0(here::here(), "/simulated_data/res_multiple.Rds"))
+}
+
+Zs_on_X_coefs <- res_multiple %>% 
+  select(sim_data) %>% 
+  transmute(coefs = map(sim_data, ~.x$coefficients)) %>% 
+  unnest(coefs) %>% 
+  filter(str_detect(effect, "Z[0-9]+_on_X")) %>% 
+  unique() %>% 
+  mutate(IV = str_extract(effect, pattern = "Z[0-9]+")) %>% 
+  rename(indIVs_on_X = coef)
+
+tidy_results_multiple <- res_multiple %>% 
+  select(-sim_data) %>% 
+  unnest(my_bpbounds_res) %>% 
+  select(-bpbounds) %>% 
+  unnest(tidy_output) %>% 
+  left_join(Zs_on_X_coefs)
+```
+
+For fixed $\gamma_X = \gamma_Y = \beta = 0.19$, we look at how the values for $\alpha_i$ impact the bounds.
+
+```{r}
+tidy_results_multiple %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         U_on_X > 0.18, U_on_Y > 0.18, X_on_Y > 0.18) %>% 
+  ggplot(aes(x = indIVs_on_X, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+For fixed $\gamma_X = \gamma_Y = \alpha = 0.19$, we vary $\beta$.
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         U_on_X > 0.18, U_on_Y > 0.18, indIVs_on_X > 0.18) %>% 
+  ggplot(aes(x = X_on_Y, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+For fixed $\alpha = \beta = \gamma_Y = 0.19$, we vary $\gamma_X$.
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         X_on_Y > 0.18, U_on_Y > 0.18, indIVs_on_X > 0.18) %>% 
+  ggplot(aes(x = U_on_X, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+For fixed $\alpha = \beta = \gamma_X = 0.19$, we vary $\gamma_Y$.
+
+
+```{r}
+tidy_results %>% 
+  filter(`Causal parameter` == "ACE", Assumption == "IV Inequality",
+         X_on_Y > 0.18, U_on_X > 0.18, indIVs_on_X > 0.18) %>% 
+  ggplot(aes(x = U_on_Y, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+  geom_errorbar() + 
+  geom_point(color = "red") +
+  theme_bw()
+```
+
+### Setup 3: multiple independent IVs, and a pair of correlated IVs
+
+Here, we add a pair of correlated IVs, such that we now have
+
+$$
+p_X = 0.05 + \sum_{i=1}^{n_{iv}} \alpha_i \cdot Z_i + \alpha_{n_{iv} + 1} Z^1_1 +\alpha_{n_{iv} + 2} Z^1_2 + \gamma_X \cdot U.
+$$
+
+$Z^1_i$ is $I(W_i >= 0)$, where 
+
+$$
+(W_1, W_2)^T \sim MVN\left((0,0)^T, \begin{pmatrix} 1 & \rho \\ \rho & 1 \end{pmatrix} \right).
+$$
+
+```{r}
+if(!file.exists(paste0(here::here(), "/simulated_data/multiple_IVs_w_rho_simulation.Rds")) && !interactive()){
+  multiple_IVs_w_rho <- expand_grid(U_on_X = seq(0.01, by = 0.02, length.out = 10),
+                                    U_on_Y = seq(0.01, by = 0.02, length.out = 10),
+                                    X_on_Y = seq(0.01, by = 0.02, length.out = 10),
+                                    rho = seq(0.1, 1, by = 0.2))
+  
+  library(furrr)
+  plan(multiprocess)
+  
+  multiple_IVs_w_rho_simulation <- multiple_IVs_w_rho %>% 
+    mutate(sim_data = future_pmap(list(a = U_on_X, 
+                                       b = U_on_Y,
+                                       c = X_on_Y,
+                                       d = rho),
+                                  function(a,b,c,d){
+                                    simulate_data(sample_size = 10000,
+                                                  U_on_X = a, 
+                                                  U_on_Y = b,
+                                                  X_on_Y = c, 
+                                                  indIVs_on_X = seq(0.01, by = 0.02, length.out = 10),
+                                                  rho = d, depIVs_on_X = c(0.05, 0.15))
+                                  }))
+  
+  write_rds(x = multiple_IVs_w_rho_simulation, path = paste0(here::here(), "/simulated_data/multiple_IVs_w_rho_simulation.Rds"))
+} 
+
+if(!file.exists(paste0(here::here(), "/simulated_data/res_multiple_w_rho.Rds")) && !interactive()){
+  if(!exists("multiple_IVs_w_rho"))
+    multiple_IVs_w_rho <- read_rds(paste0(here::here(), "/simulated_data/multiple_IVs_w_rho_simulation.Rds"))
+  
+  
+  library(furrr)
+  plan(multiprocess)
+  
+  res_multiple_w_rho <- multiple_IVs_w_rho_simulation %>% 
+    mutate(my_bpbounds_res = future_map(sim_data,
+                                        ~my_bpbounds(input_data = .x$simulated_data))) %>% 
+    mutate(my_bpbounds_res = future_map(my_bpbounds_res, function(x){ 
+      x %>% 
+        mutate(tidy_output = map(bpbounds, tidy_bpbounds),
+               `n Z categories` = map_dbl(bpbounds, function(x) x$nzcats))
+    }))
+  
+  write_rds(res_multiple_w_rho, paste0(here::here(), "/simulated_data/res_multiple_w_rho.Rds"))
+} 
+
+if(!file.exists(paste0(here::here(), "/simulated_data/tidy_results_multiple_w_rho.Rds")) && !interactive()){
+  if(!exists(res_multiple_w_rho))
+    res_multiple_w_rho <- read_rds(paste0(here::here(), "/simulated_data/res_multiple_w_rho.Rds"))
+  
+  Zs_on_X_coefs_w_rho <- res_multiple_w_rho %>% 
+    select(sim_data) %>% 
+    transmute(coefs = map(sim_data, ~.x$coefficients)) %>% 
+    unnest(coefs) %>% 
+    filter(str_detect(effect, "Z[0-9]+_on_X")) %>% 
+    unique() %>% 
+    mutate(IV = str_extract(effect, pattern = "Z[0-9]+")) %>% 
+    rename(indIVs_on_X = coef)
+  
+  tidy_results_multiple_w_rho <- res_multiple_w_rho %>% 
+    select(-sim_data) %>% 
+    unnest(my_bpbounds_res) %>% 
+    select(-bpbounds) %>% 
+    unnest(tidy_output) %>% 
+    left_join(Zs_on_X_coefs_w_rho)
+  
+  write_rds(tidy_results_multiple_w_rho, 
+            paste0(here::here(), "/simulated_data/tidy_results_multiple_w_rho.Rds"))
+} else {
+  tidy_results_multiple_w_rho <- read_rds(paste0(here::here(), "/simulated_data/tidy_results_multiple_w_rho.Rds"))
+}
+```
+
+
+```{r}
+plot_w_rho <- tidy_results_multiple_w_rho %>% 
+  filter(U_on_X > 0.18, U_on_Y > 0.18, X_on_Y > 0.18,
+         `Causal parameter` == "ACE", Assumption == "IV Inequality") %>% 
+  mutate(IV = factor(IV,
+                     levels = paste0("Z", 1:length(unique(IV))))) %>% 
+  ggplot(aes(x = IV, y = indIVs_on_X,
+             ymin = `Lower bound`, ymax = `Upper bound`)) +
+    facet_wrap(~rho, ncol = 2,
+               labeller = label_both) + 
+    geom_errorbar() + 
+    geom_point(color = "red") +
+    theme_bw()
+
+plotly::ggplotly(plot_w_rho)
+```
+
