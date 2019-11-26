@@ -1,6 +1,5 @@
 library(shiny)
 library(bpbounds)
-library(simcausal)
 library(glue)
 library(dagitty)
 library(ggdag)
@@ -28,7 +27,7 @@ server <- function(input, output){
              function(i){
                numericInput(inputId = paste0("Z", i, "_on_Y"),
                             label = paste0("Z", i),
-                            value = 0.02*i,
+                            value = 0,
                             min = 0, max = 1)
              })
     }

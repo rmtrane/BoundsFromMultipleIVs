@@ -7,7 +7,7 @@ Here we will explore the effect of instrumental variables on nonparameteric boun
 Make sure you have the following packages using the code below:
 
 ```
-install.packages(c('shiny','bpbounds','glue','dagitty','ggdag','ggrepel','tidyverse'))
+install.packages(c('shiny','bpbounds','glue','dagitty','ggdag','ggrepel','tidyverse', 'DT'))
 ```
 
 Once that is done, you can run the application using this line of code:
