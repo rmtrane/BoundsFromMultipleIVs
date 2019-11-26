@@ -209,16 +209,16 @@ simulate_data <- function(sample_size = 10000,
       tibble(coef = indIVs_on_Y,
              effect = glue("Z{1:length(indIVs_on_Y)}_on_Y"))
     ) %>%
-      filter(coefs > 0)
+      filter(coef > 0)
   }
 
   if(any(depIVs_on_Y > 0)){
     coefs <- bind_rows(
       coefs,
       tibble(coef = depIVs_on_Y,
-           effect = glue("Z{length(depIVs_on_Y) + c(1,2)}_on_Y"))
+             effect = glue("Z{length(depIVs_on_Y) + c(1,2)}_on_Y"))
     ) %>%
-      filter(coefs > 0)
+      filter(coef > 0)
   }
 
   return(list(simulated_data = select(out_data, -pX, -pY),
