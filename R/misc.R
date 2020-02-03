@@ -76,6 +76,7 @@ rbivNorm <- function(n, mu = 0, var1 = 1, var2 = 1, rho = 0, probs = c(0.25, 0.5
 ## Simulate data manually (simcausal not working at all...)
 simulate_data <- function(sample_size = 10000,
                           indIVs_on_X = NULL, IVs_ps = c(0.5, 0.5), indIVs_on_Y = NULL,
+                          pU = 0.5,
                           X_intercept = 0.05, U_on_X = 0.1,
                           Y_intercept = 0.05, X_on_Y = 0.05, U_on_Y = 0.1,
                           rho = NULL, depIVs_on_X = NULL, dep_probs = c(0.5, 0.5), depIVs_on_Y = NULL){
@@ -87,12 +88,12 @@ simulate_data <- function(sample_size = 10000,
   if(is.null(depIVs_on_Y))
     depIVs_on_Y <- rep(0, length(depIVs_on_X))
 
-  ## Start tibble with just why. Include effects on X and Y for later use.
+  ## Start tibble with just U. Include effects on X and Y for later use.
   final_data <- tibble(var = "U",
                        var_on_X = U_on_X,
                        var_on_Y = U_on_Y,
                        simulated = map(var, function(x){
-                         as.numeric(rbernoulli(n = sample_size, p = 0.5))
+                         as.numeric(rbernoulli(n = sample_size, p = pU))
                        }))
 
   ## If independent IVs are included...
@@ -162,9 +163,9 @@ simulate_data <- function(sample_size = 10000,
   ## Simulate X
   out_data <- tmp_data %>%
     pivot_wider(id_cols = c(i, var, pX, pY), names_from = var, values_from = simulated) %>%
-    mutate(X = map_dbl(pX, ~rbinom(n = 1, size = 1, prob = min(.x, 1))),
+    mutate(X = map_dbl(pX, ~rbinom(n = 1, size = 1, prob = plogis(.x))),
            pY = pY + X*X_on_Y,
-           Y = map_dbl(pY, ~rbinom(n = 1, size = 1, prob = min(.x, 1)))) %>%
+           Y = map_dbl(pY, ~rbinom(n = 1, size = 1, prob = plogis(.x)))) %>%
     select(-i)
 
   #message(paste("Number of pX > 1:", sum(out_data$pX > 1)))
@@ -226,6 +227,7 @@ simulate_data <- function(sample_size = 10000,
               IVs_ps = IVs_ps,
               dep_probs = dep_probs))
 }
+
 
 from_simulated_to_dag <- function(simulated_data, layout = "auto"){
 
@@ -304,7 +306,11 @@ plot_bounds <- function(my_bds, sim_data_coefficients){
   IVs <- for_plot$IV
   IV_coefs <- for_plot$coef
 
-  true_effect <- sim_data_coefficients %>% filter(effect == "X_on_Y") %>% pull(coef)
+  true_X_on_Y <- sim_data_coefficients %>% filter(effect == "X_on_Y") %>% pull(coef)
+  true_Y_int <- sim_data_coefficients %>% filter(effect == "Yintercept") %>% pull(coef)
+  #true_U_on_Y <- sim_data_coefficients %>% filter(effect == "U_on_Y") %>% pull(coef)
+
+  true_effect <- plogis(true_Y_int + true_X_on_Y) - plogis(true_Y_int)
 
   ggplot(for_plot,
          aes(ymin = `Lower bound`, ymax = `Upper bound`, x = seq_along(IV))) +
@@ -317,6 +323,10 @@ plot_bounds <- function(my_bds, sim_data_coefficients){
                                            breaks = seq_along(IVs),
                                            labels = IV_coefs,
                                            name = "Effect on X")) +
+    geom_text(aes(y = `Lower bound`, label = `Lower bound`),
+              vjust = 1.5) +
+    geom_text(aes(y = `Upper bound`, label = `Upper bound`),
+              vjust = -0.5) +
     scale_y_continuous(limits = c(-1,1)) +
     theme_bw()
 }
